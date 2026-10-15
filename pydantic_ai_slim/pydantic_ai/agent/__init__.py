@@ -66,6 +66,7 @@ from .._cancel import CancellationToken, RunBinding, RunCancellation, take_run_b
 from .._deferred_capabilities import registered_loaded_capability_ids
 from .._instructions import AgentInstructions
 from .._output import OutputToolset
+from .._request_reservations import InFlightRequest
 from .._run_context import dispatch_event_stream, set_current_run_context
 from .._template import validate_from_spec_args
 from .._warnings import PydanticAIDeprecationWarning
@@ -1494,6 +1495,8 @@ class Agent(AbstractAgent[AgentDepsT, OutputDataT]):
         # toolset `for_run()` hooks below) runs in this context: a hook that starts a nested agent
         # run would otherwise consume it and attach the outer handle to the wrong run.
         binding = take_run_binding()
+        # Consume a pre-counted judge claim before setup hooks can start another run.
+        in_flight_request = InFlightRequest()
 
         # The controller likewise exists before any user-supplied setup code, so `RunContext.cancel()`
         # from a capability/toolset `for_run()` hook records the request instead of raising. Delivery
@@ -2027,6 +2030,7 @@ class Agent(AbstractAgent[AgentDepsT, OutputDataT]):
             enter_model=model_resources.enter_model,
             get_model_settings=get_model_settings,
             usage_limits=usage_limits,
+            in_flight_request=in_flight_request,
             max_output_retries=effective_output_toolset_max_retries,
             end_strategy=self.end_strategy,
             output_schema=output_schema,

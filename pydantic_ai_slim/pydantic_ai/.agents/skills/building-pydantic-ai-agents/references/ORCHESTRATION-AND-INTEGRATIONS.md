@@ -15,9 +15,12 @@ researcher = Agent('openai:gpt-5.2', name='researcher_agent', output_type=str)
 
 @parent.tool
 async def research(ctx: RunContext, topic: str) -> str:
-    result = await researcher.run(f'Research: {topic}', usage=ctx.usage)
+    result = await researcher.run(f'Research: {topic}', usage=ctx.usage, usage_limits=ctx.usage_limits)
     return result.output
 ```
+
+Pass both `usage` and `usage_limits` to share the parent's request budget. Concurrent runs sharing the same
+`RunUsage` count their in-flight steps when admitting another step, so they cannot spend the same remaining slot.
 
 Delegating tools and output functions must be `async def` and use `await delegate.run(...)`; never call
 `run_sync()` or `run_stream_sync()` inside them. The parent may still use `run_sync()` at the application boundary.

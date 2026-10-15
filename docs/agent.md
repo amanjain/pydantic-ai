@@ -1134,6 +1134,7 @@ except UsageLimitExceeded as e:
 
 !!! note
     - Usage limits are especially relevant if you've registered many tools. Use `request_limit` to bound the number of model turns, and `tool_calls_limit` to cap the number of successful tool executions within a run.
+    - When concurrent runs share the same [`RunUsage`][pydantic_ai.usage.RunUsage] and `request_limit`, the limit check includes both completed steps and steps still in flight. A step that fails without a counted response does not consume the budget. This also applies to nested agents called from model-request hooks; `usage.requests` continues to report only counted steps.
     - The `tool_calls_limit` is checked before executing tool calls. If the model returns parallel tool calls that would exceed the limit, no tools will be executed.
 
 Tools and [capabilities](capabilities/overview.md) can read the run's limits from [`ctx.usage_limits`][pydantic_ai.tools.RunContext.usage_limits] (alongside [`ctx.usage`][pydantic_ai.tools.RunContext.usage] for usage so far), so a budget-aware tool or capability can disclose or adapt to the remaining budget without being configured with a duplicate copy of the limits. It reflects what the run is already enforcing and is read-only by convention.
