@@ -66,6 +66,7 @@ from ._deferred_capabilities import (
 )
 from ._genai_prices import best_effort_price, fill_response_cost
 from ._history_mirroring import HistoryMirroringMessages
+from ._request_reservations import InFlightRequest
 from ._run_context import (
     AnchoredEvidence,
     EventStreamBuffer,
@@ -534,6 +535,9 @@ class GraphAgentDeps(Generic[DepsT, OutputDataT]):
 
     cancellation: RunCancellation = dataclasses.field(default_factory=RunCancellation, repr=False)
     """The run's first-party cancellation controller. Runtime-only: holds a live task reference."""
+
+    in_flight_request: InFlightRequest = field(default_factory=InFlightRequest, repr=False)
+    """Runtime-only request capacity held until the current step is counted or abandoned."""
 
     pending_immediate_dispatches: dict[int, list[anyio.Event]] = dataclasses.field(
         default_factory=dict[int, list[anyio.Event]], repr=False
@@ -1409,14 +1413,30 @@ class ModelRequestNode(AgentNode[DepsT, NodeRunEndT]):
             # means that the stream was started but not finished before `run()` was called
             raise exceptions.AgentRunError('You must finish streaming before calling run()')  # pragma: no cover
 
-        return await self._make_request(ctx)
+        with ctx.deps.in_flight_request.running():
+            try:
+                return await self._make_request(ctx)
+            finally:
+                ctx.deps.in_flight_request.release()
 
     @asynccontextmanager
-    async def stream(  # noqa: C901
+    async def stream(
         self,
         ctx: GraphRunContext[GraphAgentState, GraphAgentDeps[DepsT, T]],
     ) -> AsyncGenerator[result.AgentStream[DepsT, T]]:
         assert not self._did_stream, 'stream() should only be called once per node'
+        with ctx.deps.in_flight_request.running():
+            try:
+                async with self._stream(ctx) as stream:
+                    yield stream
+            finally:
+                ctx.deps.in_flight_request.release()
+
+    @asynccontextmanager
+    async def _stream(  # noqa: C901
+        self,
+        ctx: GraphRunContext[GraphAgentState, GraphAgentDeps[DepsT, T]],
+    ) -> AsyncGenerator[result.AgentStream[DepsT, T]]:
 
         request_context, run_context = await self._prepare_request(ctx, streaming=True)
 
@@ -1667,6 +1687,7 @@ class ModelRequestNode(AgentNode[DepsT, NodeRunEndT]):
             # The agent acted on what was streamed before the interruption, so the step counts;
             # a stream that failed before producing anything doesn't.
             _usage_attribution.record_request(ctx.state.usage)
+            ctx.deps.in_flight_request.release()
         ctx.state.message_history.append(partial_response)
 
     @staticmethod
@@ -1832,7 +1853,7 @@ class ModelRequestNode(AgentNode[DepsT, NodeRunEndT]):
         self.last_request_context = request_context
         # At the start of the step, before `wrap_model_request`: a step a wrapper answers from a
         # cache still counts in `usage.requests`, so it must not get past `request_limit` either.
-        ctx.deps.usage_limits.check_before_request(ctx.state.usage)
+        ctx.deps.in_flight_request.check_and_hold(ctx.deps.usage_limits, ctx.state.usage)
         return request_context, run_context
 
     async def _prepare_resume_request(
@@ -1895,7 +1916,7 @@ class ModelRequestNode(AgentNode[DepsT, NodeRunEndT]):
         # The request messages keep the suspended response as the continuation seed.
         _set_resumed_history(ctx, request_context.messages[:-1])
         # At the start of the step, before `wrap_model_request`, as in `_prepare_request`.
-        ctx.deps.usage_limits.check_before_request(ctx.state.usage)
+        ctx.deps.in_flight_request.check_and_hold(ctx.deps.usage_limits, ctx.state.usage)
         return request_context, run_context
 
     async def _apply_before_model_request(
@@ -2156,6 +2177,7 @@ class ModelRequestNode(AgentNode[DepsT, NodeRunEndT]):
         fill_run_metadata(response, run_id=ctx.state.run_id, conversation_id=ctx.state.conversation_id)
         response.workspace_ref = ctx.deps.workspace_ref
         _usage_attribution.record_request(ctx.state.usage)
+        ctx.deps.in_flight_request.release()
         if record_usage:
             ModelRequestNode._record_response_usage(ctx, response)
             ModelRequestNode._enforce_usage_limits(ctx, [response])

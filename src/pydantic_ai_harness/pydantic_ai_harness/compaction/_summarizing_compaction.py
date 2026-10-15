@@ -794,7 +794,7 @@ class SummarizingCompaction(AbstractCapability[AgentDepsT]):
             prompt,
             conversation_id=ctx.conversation_id,
             usage=ctx.usage,
-            usage_limits=reserved_usage_limits(ctx.usage_limits),
+            usage_limits=reserved_usage_limits(ctx.usage_limits, usage=ctx.usage),
             event_stream_handler=self.event_stream_handler,
         )
         return result.output

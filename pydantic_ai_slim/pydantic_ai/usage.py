@@ -501,6 +501,8 @@ class UsageLimits:
     provider SDK or HTTP transport retries aren't counted. The tokens and cost of a response a `FallbackModel`
     rejected, and of continuation requests, do count towards the token and cost limits. It's checked at the start
     of each step, including a step answered without a request to the model.
+    Concurrent runs sharing the same `RunUsage` also count steps still in flight when checking this limit.
+    `RunUsage.requests` continues to report only counted responses.
     """
     tool_calls_limit: int | None = None
     """The maximum number of successful tool calls allowed to be executed."""

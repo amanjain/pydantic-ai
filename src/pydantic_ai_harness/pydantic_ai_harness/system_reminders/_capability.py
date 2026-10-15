@@ -10,6 +10,7 @@ from dataclasses import KW_ONLY, dataclass, field, replace
 from typing import TYPE_CHECKING, Generic, Literal, TypeGuard
 
 from pydantic_ai import Agent
+from pydantic_ai._request_reservations import reserved_requests
 from pydantic_ai.capabilities import AbstractCapability, durable_operation
 from pydantic_ai.messages import (
     CachePoint,
@@ -390,7 +391,7 @@ class LLMReminder(Generic[AgentDepsT]):
             transcript,
             conversation_id=ctx.conversation_id,
             usage=ctx.usage,
-            usage_limits=reserved_usage_limits(ctx.usage_limits),
+            usage_limits=reserved_usage_limits(ctx.usage_limits, usage=ctx.usage),
         )
         text = result.output.strip()
         return text or None
@@ -398,8 +399,12 @@ class LLMReminder(Generic[AgentDepsT]):
 
 def _request_reserved_for_parent(ctx: RunContext[AgentDepsT]) -> bool:
     """Whether a nested request would spend the request already approved for the parent."""
-    limits = reserved_usage_limits(ctx.usage_limits)
-    return limits is not None and limits.request_limit is not None and ctx.usage.requests >= limits.request_limit
+    limits = reserved_usage_limits(ctx.usage_limits, usage=ctx.usage)
+    return (
+        limits is not None
+        and limits.request_limit is not None
+        and ctx.usage.requests + reserved_requests(ctx.usage) >= limits.request_limit
+    )
 
 
 def _is_llm_reminder(value: object) -> TypeGuard[LLMReminder[AgentDepsT]]:

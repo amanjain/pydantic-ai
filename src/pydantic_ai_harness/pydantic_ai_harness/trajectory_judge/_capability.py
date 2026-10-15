@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Protocol, TypeAlias, runtime_c
 from pydantic import Field, TypeAdapter
 
 from pydantic_ai import Agent
+from pydantic_ai._request_reservations import pre_counted_request
 from pydantic_ai.capabilities import AbstractCapability, WrapRunHandler
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.messages import (
@@ -299,13 +300,14 @@ class TrajectoryJudge(AbstractCapability[AgentDepsT]):
         the model layer) and are re-raised on the run by `_collect_finished`.
         """
         try:
-            result = await self._judge.run(
-                prompt,
-                output_type=[AllGood, Steer],
-                conversation_id=ctx.conversation_id,
-                usage=ctx.usage,
-                usage_limits=_claim_offset_limits(ctx.usage_limits),
-            )
+            with pre_counted_request(ctx.usage):
+                result = await self._judge.run(
+                    prompt,
+                    output_type=[AllGood, Steer],
+                    conversation_id=ctx.conversation_id,
+                    usage=ctx.usage,
+                    usage_limits=_claim_offset_limits(ctx.usage_limits),
+                )
         finally:
             self._release_claim(ctx)
         verdict = result.output

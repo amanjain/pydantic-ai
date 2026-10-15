@@ -8,6 +8,7 @@ from dataclasses import KW_ONLY, dataclass, field
 from typing import Literal
 
 from pydantic_ai import Agent
+from pydantic_ai._request_reservations import pre_counted_request
 from pydantic_ai.capabilities import (
     AbstractCapability,
     CapabilityOrdering,
@@ -283,9 +284,10 @@ class ApprovalReviewer(AbstractCapability[AgentDepsT]):
         answer is reused instead of the model being asked, and paid for, again. The run's limits
         are raised by the request `_review_call` claimed, which is already counted in `usage`.
         """
-        result = await self._reviewer.run(
-            prompt,
-            usage=ctx.usage,
-            usage_limits=claim_offset_limits(ctx.usage_limits),
-        )
+        with pre_counted_request(ctx.usage):
+            result = await self._reviewer.run(
+                prompt,
+                usage=ctx.usage,
+                usage_limits=claim_offset_limits(ctx.usage_limits),
+            )
         return result.output, reported_confidence(result.response.provider_details)

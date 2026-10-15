@@ -543,6 +543,29 @@ class TestUsageAccounting:
         assert usage.requests == 2, 'the judges billed past the run request limit'
         assert judge_calls == ['no'], 'only the judgement the budget affords reaches the model'
 
+    async def test_parallel_judgements_fit_an_exact_request_budget(self) -> None:
+        """A claimed judgement isn't also held against the budget, so siblings don't count it twice."""
+        judge_calls: list[str] = []
+        ran: list[str] = []
+        agent = _agent(
+            _judge(_yielding_judge_model('no', calls=judge_calls)),
+            _outer_model(
+                ToolCallPart('danger', {'x': 1}, tool_call_id='call-1'),
+                ToolCallPart('danger', {'x': 2}, tool_call_id='call-2'),
+                ToolCallPart('danger', {'x': 3}, tool_call_id='call-3'),
+            ),
+            ran=ran,
+        )
+
+        usage = RunUsage()
+        # The outer request and the three judgements spend the budget exactly; the outer run's next request
+        # is the first one that doesn't fit.
+        with pytest.raises(UsageLimitExceeded):
+            await agent.run('go', usage=usage, usage_limits=UsageLimits(request_limit=4))
+
+        assert usage.requests == 4
+        assert judge_calls == ['no', 'no', 'no'], 'every judgement the budget affords reaches the model'
+
 
 class TestDurableExecution:
     """The judgement is a durable operation, addressed by the capability's `id`."""
