@@ -4539,6 +4539,8 @@ class OpenAIStreamedResponse(StreamedResponse):
             if not self._has_finish_reason and not self._has_refusal and not self.cancelled:
                 # Some OpenAI-compatible providers never send a finish reason.
                 self.finish_reason = self._missing_finish_reason()
+            for event in self._map_text_events(self._parts_manager.flush_thinking_tag_buffer()):
+                yield event
 
     def _validate_response(self) -> AsyncIterable[ChatCompletionChunk]:
         """Hook that validates incoming chunks.
@@ -4600,6 +4602,7 @@ class OpenAIStreamedResponse(StreamedResponse):
                     UserWarning,
                 )
                 continue
+            yield from self._map_text_events(self._parts_manager.flush_thinking_tag_buffer())
             for event in self._parts_manager.handle_thinking_delta(
                 vendor_part_id=('reasoning', field_name, self._reasoning_generation),
                 id=field_name,
@@ -4620,21 +4623,15 @@ class OpenAIStreamedResponse(StreamedResponse):
         content = choice.delta.content
         if content:
             emitted = False
-            for event in self._parts_manager.handle_text_delta(
-                vendor_part_id=('content', self._content_generation),
-                content=content,
-                thinking_tags=self._model_profile.get('thinking_tags', DEFAULT_THINKING_TAGS),
-                ignore_leading_whitespace=self._model_profile.get('ignore_streamed_leading_whitespace', False),
+            for event in self._map_text_events(
+                self._parts_manager.handle_text_delta(
+                    vendor_part_id=('content', self._content_generation),
+                    content=content,
+                    thinking_tags=self._model_profile.get('thinking_tags', DEFAULT_THINKING_TAGS),
+                    ignore_leading_whitespace=self._model_profile.get('ignore_streamed_leading_whitespace', False),
+                )
             ):
                 emitted = True
-                if isinstance(event, PartStartEvent):
-                    self._advance_part_boundary('content')
-                    if isinstance(event.part, ThinkingPart):
-                        event.part.id = 'content'
-                        event.part.provider_name = self.provider_name
-                    elif isinstance(event.part, TextPart) and self._held_text_whitespace:
-                        event.part.content = self._held_text_whitespace + event.part.content
-                        self._held_text_whitespace = ''
                 yield event
             if not emitted and content.isspace() and self._awaiting_text_after_reasoning:
                 # `ignore_streamed_leading_whitespace` dropped the whitespace-only start of text right after reasoning
@@ -4643,6 +4640,19 @@ class OpenAIStreamedResponse(StreamedResponse):
                 # whitespace anywhere else is dropped as usual.
                 self._held_text_whitespace += content
 
+    def _map_text_events(self, events: Iterable[ModelResponseStreamEvent]) -> Iterable[ModelResponseStreamEvent]:
+        """Apply content boundaries and metadata to both parsed and flushed text events."""
+        for event in events:
+            if isinstance(event, PartStartEvent):
+                self._advance_part_boundary('content')
+                if isinstance(event.part, ThinkingPart):
+                    event.part.id = 'content'
+                    event.part.provider_name = self.provider_name
+                elif isinstance(event.part, TextPart) and self._held_text_whitespace:
+                    event.part.content = self._held_text_whitespace + event.part.content
+                    self._held_text_whitespace = ''
+            yield event
+
     def _map_tool_call_delta(self, choice: chat_completion_chunk.Choice) -> Iterable[ModelResponseStreamEvent]:
         """Hook that maps tool call delta content to events.
 
@@ -4650,6 +4660,7 @@ class OpenAIStreamedResponse(StreamedResponse):
         """
         for dtc in choice.delta.tool_calls or []:
             provider_details = _map_tool_call_provider_details(dtc)
+            yield from self._map_text_events(self._parts_manager.flush_thinking_tag_buffer())
             maybe_event = self._parts_manager.handle_tool_call_delta(
                 vendor_part_id=dtc.index,
                 tool_name=dtc.function.name if dtc.function is not None else None,

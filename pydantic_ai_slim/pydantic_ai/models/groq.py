@@ -760,6 +760,8 @@ class GroqStreamedResponse(StreamedResponse):
                         reasoning = False
 
                     if choice.delta.executed_tools:
+                        for event in self._parts_manager.flush_thinking_tag_buffer():
+                            yield event
                         for tool in choice.delta.executed_tools:
                             call_part, return_part = _map_executed_tool(
                                 tool, self.provider_name, streaming=True, tool_call_id=executed_tool_call_id
@@ -790,6 +792,8 @@ class GroqStreamedResponse(StreamedResponse):
 
                     # Handle the tool calls
                     for dtc in choice.delta.tool_calls or []:
+                        for event in self._parts_manager.flush_thinking_tag_buffer():
+                            yield event
                         maybe_event = self._parts_manager.handle_tool_call_delta(
                             vendor_part_id=dtc.index,
                             tool_name=dtc.function.name if dtc.function is not None else None,
@@ -803,6 +807,8 @@ class GroqStreamedResponse(StreamedResponse):
                 # but we'd rather handle it ourselves so we can tell the model to retry the tool call
                 if (failed_generation := _parse_tool_use_failed_error(e.body)) is not None:
                     if isinstance(failed_generation, _GroqToolUseFailedGeneration):
+                        for event in self._parts_manager.flush_thinking_tag_buffer():
+                            yield event
                         yield self._parts_manager.handle_tool_call_part(
                             vendor_part_id='tool_use_failed',
                             tool_name=failed_generation.name,

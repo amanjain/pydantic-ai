@@ -22,7 +22,7 @@ from pydantic_ai._deferred_capabilities import LoadCapabilityCallPart
 from pydantic_ai._parts_manager import ModelResponsePartsManager
 from pydantic_ai.messages import ModelResponseStreamEvent
 from pydantic_ai.models import ModelRequestParameters
-from pydantic_ai.profiles import ModelProfile
+from pydantic_ai.profiles import DEFAULT_THINKING_TAGS
 from pydantic_ai.tools import ToolDefinition
 
 from ._inline_snapshot import snapshot
@@ -597,7 +597,7 @@ def test_handle_text_deltas_with_think_tags():
 
 def test_handle_text_deltas_with_think_tags_split_across_chunks():
     manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
-    thinking_tags = ModelProfile().thinking_tags
+    thinking_tags = DEFAULT_THINKING_TAGS
     start_tag, end_tag = thinking_tags
 
     events = list(
@@ -648,7 +648,7 @@ def test_handle_text_deltas_with_think_tags_split_across_chunks():
 
 def test_handle_text_deltas_with_think_tags_single_chunk_with_trailing_text():
     manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
-    thinking_tags = ModelProfile().thinking_tags
+    thinking_tags = DEFAULT_THINKING_TAGS
     start_tag, end_tag = thinking_tags
 
     events = list(
@@ -682,7 +682,7 @@ def test_handle_text_deltas_with_think_tags_single_chunk_with_trailing_text():
 
 def test_flush_thinking_tag_buffer_emits_partial_start_tag_as_text():
     manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
-    thinking_tags = ModelProfile().thinking_tags
+    thinking_tags = DEFAULT_THINKING_TAGS
     start_tag, _ = thinking_tags
 
     list(
@@ -692,7 +692,7 @@ def test_flush_thinking_tag_buffer_emits_partial_start_tag_as_text():
             thinking_tags=thinking_tags,
         )
     )
-    events = list(manager.flush_thinking_tag_buffer(vendor_part_id='content', thinking_tags=thinking_tags))
+    events = list(manager.flush_thinking_tag_buffer())
     assert events == snapshot(
         [
             PartDeltaEvent(
@@ -707,7 +707,7 @@ def test_flush_thinking_tag_buffer_emits_partial_start_tag_as_text():
 
 def test_flush_thinking_tag_buffer_emits_partial_end_tag_as_thinking():
     manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
-    thinking_tags = ModelProfile().thinking_tags
+    thinking_tags = DEFAULT_THINKING_TAGS
     start_tag, end_tag = thinking_tags
 
     list(
@@ -724,7 +724,7 @@ def test_flush_thinking_tag_buffer_emits_partial_end_tag_as_thinking():
             thinking_tags=thinking_tags,
         )
     )
-    events = list(manager.flush_thinking_tag_buffer(vendor_part_id='content', thinking_tags=thinking_tags))
+    events = list(manager.flush_thinking_tag_buffer())
     assert events == snapshot(
         [
             PartDeltaEvent(
@@ -739,7 +739,7 @@ def test_flush_thinking_tag_buffer_emits_partial_end_tag_as_thinking():
 
 def test_handle_text_deltas_with_think_tags_text_before_start():
     manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
-    thinking_tags = ModelProfile().thinking_tags
+    thinking_tags = DEFAULT_THINKING_TAGS
     start_tag, end_tag = thinking_tags
 
     events = list(
@@ -764,7 +764,7 @@ def test_handle_text_deltas_with_think_tags_text_before_start():
 
 def test_handle_text_deltas_with_think_tags_partial_end_tag_overlap_only():
     manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
-    thinking_tags = ModelProfile().thinking_tags
+    thinking_tags = DEFAULT_THINKING_TAGS
     start_tag, end_tag = thinking_tags
 
     list(
@@ -786,7 +786,7 @@ def test_handle_text_deltas_with_think_tags_partial_end_tag_overlap_only():
 
 def test_handle_text_deltas_with_think_tags_vendor_part_id_none():
     manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
-    thinking_tags = ModelProfile().thinking_tags
+    thinking_tags = DEFAULT_THINKING_TAGS
     start_tag, end_tag = thinking_tags
 
     list(
@@ -796,7 +796,7 @@ def test_handle_text_deltas_with_think_tags_vendor_part_id_none():
             thinking_tags=thinking_tags,
         )
     )
-    events = list(manager.flush_thinking_tag_buffer(vendor_part_id=None, thinking_tags=thinking_tags))
+    events = list(manager.flush_thinking_tag_buffer())
     assert events == []
     assert manager.get_parts() == snapshot(
         [
@@ -1398,3 +1398,117 @@ def test_apply_event_preserves_stream_part_indexes():
     assert replay_manager.get_parts() == snapshot(
         [TextPart(content='hello world'), TextPart(content='goodbye everyone')]
     )
+
+
+@pytest.mark.parametrize('next_vendor, next_tags', [('second', ('<think>', '</think>')), ('first', None)])
+def test_partial_tag_keeps_its_origin(next_vendor: str, next_tags: tuple[str, str] | None):
+    """Adapters use a single text vendor ID; exercise context changes directly on the manager."""
+    manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
+    assert (
+        list(
+            manager.handle_text_delta(
+                vendor_part_id='first',
+                content='<',
+                thinking_tags=('<think>', '</think>'),
+                id='text-id',
+                provider_name='test',
+                provider_details={'key': 'value'},
+            )
+        )
+        == []
+    )
+    list(manager.handle_text_delta(vendor_part_id=next_vendor, content='literal', thinking_tags=next_tags))
+    expected = TextPart(
+        content='<' if next_vendor == 'second' else '<literal',
+        id='text-id',
+        provider_name='test',
+        provider_details={'key': 'value'},
+    )
+    assert manager.get_parts() == ([expected, TextPart(content='literal')] if next_vendor == 'second' else [expected])
+    assert list(manager.flush_thinking_tag_buffer()) == []
+
+
+@pytest.mark.parametrize('finish', [False, True])
+def test_partial_tag_preserves_metadata(finish: bool):
+    """Provider metadata may accompany only the first delta of a buffered text part."""
+    manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
+    list(
+        manager.handle_text_delta(
+            vendor_part_id='content',
+            content='<',
+            thinking_tags=('<think>', '</think>'),
+            id='text-id',
+            provider_name='test',
+            provider_details={'first': 1},
+        )
+    )
+    if finish:
+        list(manager.flush_thinking_tag_buffer())
+    else:
+        list(
+            manager.handle_text_delta(
+                vendor_part_id='content',
+                content='literal',
+                thinking_tags=('<think>', '</think>'),
+                provider_details={'second': 2},
+            )
+        )
+    assert manager.get_parts() == [
+        TextPart(
+            content='<' if finish else '<literal',
+            id='text-id',
+            provider_name='test',
+            provider_details={'first': 1} if finish else {'first': 1, 'second': 2},
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    'chunks',
+    [
+        ['<think>reason</think>', 'answer'],
+        ['<think>reason', '</thi', 'nk>', 'answer'],
+        ['<think>one</think>', 'A', '<think>two', '</think>', 'B'],
+    ],
+)
+def test_unkeyed_thinking_sections_do_not_reopen(chunks: list[str]):
+    """The provider adapters use keyed parts; pin the manager's unkeyed delimiter contract directly."""
+    manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
+    for content in chunks:
+        list(manager.handle_text_delta(vendor_part_id=None, content=content, thinking_tags=DEFAULT_THINKING_TAGS))
+    list(manager.flush_thinking_tag_buffer())
+    expected = (
+        [ThinkingPart(content='one'), TextPart(content='A'), ThinkingPart(content='two'), TextPart(content='B')]
+        if len(chunks) == 5
+        else [ThinkingPart(content='reason'), TextPart(content='answer')]
+    )
+    assert manager.get_parts() == expected
+
+
+def test_native_thinking_is_not_an_unkeyed_embedded_section():
+    """A native reasoning part alone must not put the delimiter parser inside an embedded section."""
+    manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
+    list(manager.handle_thinking_delta(vendor_part_id=None, content='native'))
+    list(manager.handle_text_delta(vendor_part_id=None, content='answer', thinking_tags=DEFAULT_THINKING_TAGS))
+    assert manager.get_parts() == [ThinkingPart(content='native'), TextPart(content='answer')]
+
+
+@pytest.mark.parametrize('initial', [None, 'text', 'thinking'])
+def test_empty_tagged_delta_preserves_empty_part_events(initial: str | None):
+    """Adapters filter empty SDK text; exercise empty deltas and metadata through the manager."""
+    manager = ModelResponsePartsManager(model_request_parameters=ModelRequestParameters())
+    if initial is not None:
+        list(
+            manager.handle_text_delta(
+                vendor_part_id='content',
+                content='<think>' if initial == 'thinking' else 'text',
+                thinking_tags=DEFAULT_THINKING_TAGS,
+            )
+        )
+    events = list(manager.handle_text_delta(vendor_part_id='content', content='', thinking_tags=DEFAULT_THINKING_TAGS))
+    if initial == 'thinking':
+        assert events == [PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=''))]
+    elif initial == 'text':
+        assert events == [PartDeltaEvent(index=0, delta=TextPartDelta(content_delta=''))]
+    else:
+        assert events == [PartStartEvent(index=0, part=TextPart(content=''))]

@@ -1290,6 +1290,13 @@ class StreamedResponse(ABC):
         """
         if self._event_iterator is None:
 
+            async def iterator_with_flushed_text() -> AsyncIterator[ModelResponseStreamEvent]:
+                # A no-op without a pending delimiter; flush before final-result and part-end events.
+                async for event in self._get_event_iterator():
+                    yield event
+                for event in self._parts_manager.flush_thinking_tag_buffer():
+                    yield event
+
             async def iterator_with_final_event(
                 iterator: AsyncIterator[ModelResponseStreamEvent],
             ) -> AsyncIterator[ModelResponseStreamEvent]:
@@ -1380,7 +1387,7 @@ class StreamedResponse(ABC):
                         self._finished = True
 
             self._event_iterator = iterator_with_cancel_guard(
-                iterator_with_part_end(iterator_with_final_event(self._get_event_iterator()))
+                iterator_with_part_end(iterator_with_final_event(iterator_with_flushed_text()))
             )
         return self._event_iterator
 
